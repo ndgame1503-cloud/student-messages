@@ -36,7 +36,18 @@ function makeId() {
   return Math.random().toString(36).slice(2, 10);
 }
 
-// Trang chủ: danh sách lời nhắn
+// Helper: escape HTML
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+function escapeAttr(str) {
+  return String(str).replace(/"/g, '&quot;');
+}
+
+// Trang chủ
 app.get('/', (req, res) => {
   const messages = readMessages().sort((a, b) => b.createdAt - a.createdAt);
 
@@ -73,6 +84,7 @@ app.get('/', (req, res) => {
       <header class="hero">
         <h1>Sinh viên có điều muốn nói?</h1>
         <p>Chia sẻ thông điệp của bạn để toàn trường cùng thấy.</p>
+        <p>Lưu ý: Do đây là phiên bản thử nghiệm nên các tin nhắn sẽ tự động xóa sau vài ngày!</p>
         <a class="btn" href="${submitLink}">Gửi lời nhắn ngay</a>
       </header>
 
@@ -84,7 +96,7 @@ app.get('/', (req, res) => {
       </main>
 
       <footer class="footer">
-        <small>© ${new Date().getFullYear()} — Cộng đồng sinh viên</small>
+        <small>© ${new Date().getFullYear()} — Cộng đồng sinh viên EIU</small>
       </footer>
     </body>
     </html>
@@ -105,17 +117,17 @@ app.get('/submit', (req, res) => {
     <body>
       <header class="hero">
         <h1>Gửi lời nhắn</h1>
-        <p>Viết ngắn gọn, lịch sự và truyền cảm hứng.</p>
+        <p>Xin hãy gửi tin nhắn lịch sự, không dùng từ ngữ xúc phạm.</p>
       </header>
       <main class="container">
         <form class="form" method="POST" action="/submit">
           <label>
-            <span>Họ tên/Nickname</span>
-            <input name="name" type="text" maxlength="50" placeholder="VD: Minh, Linh, v.v." required />
+            <span>Nickname</span>
+            <input name="name" type="text" maxlength="50" required />
           </label>
           <label>
             <span>Nội dung lời nhắn</span>
-            <textarea name="content" rows="6" maxlength="500" placeholder="Điều bạn muốn chia sẻ..." required></textarea>
+            <textarea name="content" rows="6" maxlength="500" required></textarea>
           </label>
           <div class="actions">
             <button class="btn" type="submit">Đăng lời nhắn</button>
@@ -142,10 +154,51 @@ app.post('/submit', (req, res) => {
 
   const messages = readMessages();
   const id = makeId();
-  const message = { id, name, content, createdAt: Date.now() };
+  const message = { 
+    id, 
+    name, 
+    content, 
+    createdAt: Date.now(),
+    reactions: { heart: 0, like: 0, angry: 0, sad: 0, wow: 0 },
+    comments: []
+  };
   messages.push(message);
   writeMessages(messages);
 
+  res.redirect(`/message/${id}`);
+});
+
+// Thả cảm xúc
+app.post('/react/:id', (req, res) => {
+  const { id } = req.params;
+  const { type } = req.body;
+
+  const messages = readMessages();
+  const m = messages.find(x => x.id === id);
+  if (!m) return res.status(404).send('Không tìm thấy lời nhắn.');
+
+  if (!m.reactions) {
+    m.reactions = { heart: 0, like: 0, angry: 0, sad: 0, wow: 0 };
+  }
+  m.reactions[type] = (m.reactions[type] || 0) + 1;
+
+  writeMessages(messages);
+  res.redirect(`/message/${id}`);
+});
+
+// Bình luận
+app.post('/comment/:id', (req, res) => {
+  const { id } = req.params;
+  const { name, content } = req.body;
+
+  const messages = readMessages();
+  const m = messages.find(x => x.id === id);
+  if (!m) return res.status(404).send('Không tìm thấy lời nhắn.');
+
+  if (!m.comments) m.comments = [];
+  m.comments.push({ name, content, createdAt: Date.now() });
+
+  writeMessages(messages);
   res.redirect(`/message/${id}`);
 });
 
@@ -154,8 +207,6 @@ app.get('/message/:id', (req, res) => {
   const messages = readMessages();
   const m = messages.find(x => x.id === req.params.id);
   if (!m) return res.status(404).send('Không tìm thấy lời nhắn.');
-
-  const shareLink = `${req.protocol}://${req.get('host')}/go?to=${encodeURIComponent('/message/' + m.id)}`;
 
   res.send(`
     <!doctype html>
@@ -174,103 +225,56 @@ app.get('/message/:id', (req, res) => {
       <main class="container">
         <article class="card">
           <p class="content">${escapeHtml(m.content)}</p>
-          <div class="actions">
-            <a class="btn" href="/">Về trang chủ</a>
-            <a class="btn-outline" href="/go?to=${encodeURIComponent('/submit')}">Gửi lời nhắn của bạn</a>
-          </div>
-        </article>
-        <section class="share">
-          <h3>Link chia sẻ (lần đầu sẽ dẫn đến quảng cáo)</h3>
-          <code>${shareLink}</code>
-        </section>
-      </main>
-    </body>
-    </html>
-  `);
-});
 
-// Trang quảng cáo/interstitial (lần đầu click)
-app.get('/go', (req, res) => {
-  const to = req.query.to;
-  if (!to || typeof to !== 'string') {
-    return res.status(400).send('Thiếu tham số "to".');
-  }
-
-  const cookieKey = `visited_${Buffer.from(to).toString('base64')}`;
-  const visited = req.cookies[cookieKey] === '1';
-
-  // Nếu đã từng click link này → vào thẳng trang đích
-  //if (visited) {
-    return res.redirect(to);
-  //}
-
-  // Chưa từng click → hiển thị quảng cáo, lần này thiết lập cookie
-  res.send(`
-    <!doctype html>
-    <html lang="vi">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>Quảng cáo</title>
-      <link rel="stylesheet" href="/public/style.css" />
-      <meta http-equiv="Cache-Control" content="no-store" />
-    </head>
-    <body>
-      <header class="hero small">
-        <h1>Hỗ trợ trang bằng quảng cáo</h1>
-        <p>Lần đầu bạn nhấp link sẽ hiển thị quảng cáo. Lần tiếp theo sẽ vào trang đích.</p>
-      </header>
-      <main class="container">
-        <div class="ad-box">
-          <!-- Placeholder cho AdSense hoặc banner nội bộ -->
-          <div class="fake-ad">Quảng cáo đang hiển thị</div>
-          <!-- Chèn script quảng cáo của bạn ở đây -->
-        </div>
-        <div class="actions">
-          <form method="POST" action="/go/continue">
-            <input type="hidden" name="to" value="${escapeAttr(to)}" />
-            <button class="btn" type="submit">Tiếp tục vào trang</button>
+          <!-- Cảm xúc -->
+          <form method="POST" action="/react/${m.id}">
+            <button name="type" value="heart">❤️ ${m.reactions?.heart || 0}</button>
+            <button name="type" value="like">👍 ${m.reactions?.like || 0}</button>
+            <button name="type" value="angry">😡 ${m.reactions?.angry || 0}</button>
+            <button name="type" value="sad">😢 ${m.reactions?.sad || 0}</button>
+            <button name="type" value="wow">😮 ${m.reactions?.wow || 0}</button>
           </form>
-          <a class="btn-outline" href="/">Về trang chủ</a>
-        </div>
+
+          <!-- Bình luận -->
+          <section class="comments">
+            <h3>Bình luận (${m.comments?.length || 0})</h3>
+            <ul>
+              ${m.comments && m.comments.length > 0 ? m.comments.map(c => `
+                <li>
+                  <strong>${escapeHtml(c.name)}</strong> <em>• ${new Date(c.createdAt).toLocaleString()}</em>
+                  <p>${escapeHtml(c.content)}</p>
+                </li>
+              `).join('') : '<li>Chưa có bình luận nào.</li>'}
+            </ul>
+
+            <form method="POST" action="/comment/${m.id}">
+              <label>
+                <span>Họ tên</span>
+                <input name="name" type="text" maxlength="50" required />
+              </label>
+              <label>
+                <span>Nội dung bình luận</span>
+                <textarea name="content" rows="1" maxlength="300" required></textarea>
+              </label>
+              <button class="btn" type="submit">Gửi bình luận</button>
+            </form>
+          </section>
+        </article>
+
+        <a class="btn-outline" href="/">Về trang chủ</a>
       </main>
     </body>
     </html>
   `);
 });
 
-// Xác nhận đã xem quảng cáo và chuyển hướng (đặt cookie)
-app.post('/go/continue', (req, res) => {
-  const toChunks = [];
-  req.on('data', chunk => toChunks.push(chunk));
-  req.on('end', () => {
-    const body = Buffer.concat(toChunks).toString('utf8');
-    const params = new URLSearchParams(body);
-    const to = params.get('to') || '/';
-
-    const cookieKey = `visited_${Buffer.from(to).toString('base64')}`;
-    res.cookie(cookieKey, '1', {
-      httpOnly: false,
-      sameSite: 'Lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000 // 30 ngày
-    });
-    res.redirect(to);
-  });
+// Route chuyển hướng an toàn
+app.get('/go', (req, res) => {
+  const to = req.query.to || '/';
+  res.redirect(to);
 });
 
-// Helper: escape HTML
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-function escapeAttr(str) {
-  return String(str).replace(/"/g, '&quot;');
-}
-
+// Khởi động server
 app.listen(PORT, () => {
-  // Khởi tạo file dữ liệu nếu chưa có
-  if (!fs.existsSync(DATA_FILE)) writeMessages([]);
-  console.log(`Server chạy tại http://localhost:${PORT}`);
+  console.log(`Server đang chạy tại http://localhost:${PORT}`);
 });
